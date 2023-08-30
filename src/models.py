@@ -25,7 +25,7 @@ class User(db.Model):
 
 class Favourite(db.Model):
     __tablename__ = 'favourite'
-    id_favourite = db.Column(db.Integer, primary_key=True)  # Agregado un ID único para cada favorito
+    id_favourite = db.Column(db.Integer, primary_key=True)  
     id_user = db.Column(db.Integer, ForeignKey('user.id_user'))
     favourite_planet = db.Column(db.Integer, default=None)
     favourite_person = db.Column(db.Integer, default=None)
@@ -40,7 +40,7 @@ class Favourite(db.Model):
 
     def serialize(self):
         return {            
-            "id_favourite": self.id_favourite,  # Agregado un ID único para cada favorito
+            "id_favourite": self.id_favourite,  
             "id_user": self.id_user,
             "favourite_person": self.favourite_person,          
             "favourite_planet": self.favourite_planet,
