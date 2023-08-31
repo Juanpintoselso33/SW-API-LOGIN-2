@@ -13,7 +13,7 @@ class User(db.Model):
     favourites = db.relationship('Favourite', back_populates='user')
     
     def __repr__(self):
-        return f'<User {self.id_user}>'
+        return f'<User {self.id_user}>'    
 
     def serialize(self):
         return {
@@ -25,15 +25,22 @@ class User(db.Model):
 
 class Favourite(db.Model):
     __tablename__ = 'favourite'
-    id_favourite = db.Column(db.Integer, primary_key=True)  
+    
+    id_favourite = db.Column(db.Integer, primary_key=True)
     id_user = db.Column(db.Integer, ForeignKey('user.id_user'))
-    favourite_planet = db.Column(db.Integer, default=None)
-    favourite_person = db.Column(db.Integer, default=None)
-    favourite_film = db.Column(db.Integer, default=None)
-    favourite_starship = db.Column(db.Integer, default=None)
-    favourite_vehicle = db.Column(db.Integer, default=None)
+    favourite_planet = db.Column(db.Integer, ForeignKey('planet.id'), default=None)
+    favourite_person = db.Column(db.Integer, ForeignKey('person.id'), default=None)
+    favourite_film = db.Column(db.Integer, ForeignKey('film.id'), default=None)
+    favourite_starship = db.Column(db.Integer, ForeignKey('starship.id'), default=None)
+    favourite_vehicle = db.Column(db.Integer, ForeignKey('vehicle.id'), default=None)
 
-    user = db.relationship('User', back_populates='favourites')
+    # Relaciones
+    user = relationship('User', back_populates='favourites')
+    planet = relationship('Planet')  # Asumiendo que el modelo Planet tiene un campo id_planet
+    person = relationship('Person')  # Asumiendo que el modelo Person tiene un campo id_person
+    film = relationship('Film')      # Asumiendo que el modelo Film tiene un campo id_film
+    starship = relationship('Starship') # Asumiendo que el modelo Starship tiene un campo id_starship
+    vehicle = relationship('Vehicle')   # Asumiendo que el modelo Vehicle tiene un campo id_vehicle
 
     def __repr__(self):
         return f'<Favourite {self.id_favourite}>'

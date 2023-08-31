@@ -2,13 +2,14 @@
 This module takes care of starting the API Server, Loading the DB and Adding the endpoints
 """
 import os
+from admin import setup_admin
 from flask import Flask, request, jsonify, url_for
 from flask_migrate import Migrate
 from flask_swagger import swagger
 from flask_cors import CORS
 from utils import APIException, generate_sitemap
-from admin import setup_admin
 from models import db, User, Person, Planet, Film, Starship, Vehicle, Favourite
+from flask_jwt_extended import JWTManager
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -27,6 +28,9 @@ MIGRATE = Migrate(app, db)
 db.init_app(app)
 CORS(app)
 setup_admin(app)
+app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY")
+jwt = JWTManager(app)
+
 
 # Handle/serialize errors like a JSON object
 from flask import Flask, jsonify
@@ -110,6 +114,85 @@ def get_user_favourites(id_user):
     
     return jsonify(serialized_favourites), 200
 
+@app.route('/favourite', methods=['POST'])
+def add_favourite():
+    data = request.get_json()
+
+    # Verificar si el JSON contiene todos los campos necesarios
+    if not data or 'id_user' not in data:
+        return jsonify({"msg": "Missing fields"}), 400
+
+    id_user = data['id_user']
+
+    # Verificar si el usuario existe
+    user = User.query.get(id_user)
+    if user is None:
+        return jsonify({"msg": "User not found"}), 404
+
+    # Crear un diccionario para guardar los valores de los campos favoritos
+    favourite_data = {'id_user': id_user}
+
+    for key in ['favourite_planet', 'favourite_person', 'favourite_film', 'favourite_starship', 'favourite_vehicle']:
+        if key in data:
+            entity_id = data[key]
+            entity = None
+            entity_type = key.split('_')[1]
+
+            # Verificar si ya existe un favorito para el mismo usuario y la misma entidad
+            existing_favourite = Favourite.query.filter_by(id_user=id_user).filter_by(**{key: entity_id}).first()
+            if existing_favourite:
+                return jsonify({"msg": f"Duplicate favourite for {entity_type}"}), 400
+
+            # Verificar si la entidad favorita existe
+            if entity_type == 'planet':
+                entity = Planet.query.get(entity_id)
+            elif entity_type == 'person':
+                entity = Person.query.get(entity_id)
+            elif entity_type == 'film':
+                entity = Film.query.get(entity_id)
+            elif entity_type == 'starship':
+                entity = Starship.query.get(entity_id)
+            elif entity_type == 'vehicle':
+                entity = Vehicle.query.get(entity_id)
+
+            if entity is None:
+                return jsonify({"msg": f"{entity_type.capitalize()} not found"}), 404
+            
+            # Añadir al diccionario
+            favourite_data[key] = entity_id
+
+    # Crear la nueva entidad de tipo Favorito
+    new_favourite = Favourite(**favourite_data)
+
+    # Añadir la nueva entidad Favorito a la base de datos y hacer commit
+    db.session.add(new_favourite)
+    db.session.commit()
+
+    return jsonify({"msg": "Favourite added successfully", "id_favourite": new_favourite.id_favourite}), 201
+
+@app.route('/user/<int:id_user>/favourites/<int:id_favourite>', methods=['DELETE'])
+def delete_user_favourite(id_user, id_favourite):
+    # Verificar si el usuario existe
+    user = User.query.get(id_user)
+    if user is None:
+        return jsonify({"msg": "User not found"}), 404
+
+    # Buscar la entidad Favorito por su ID
+    favourite = Favourite.query.get(id_favourite)
+
+    # Si no se encuentra el favorito, devolver un error 404
+    if favourite is None:
+        return jsonify({"msg": "Favourite not found"}), 404
+
+    # Verificar si el favorito pertenece al usuario
+    if favourite.id_user != id_user:
+        return jsonify({"msg": "Favourite does not belong to the user"}), 403
+
+    # Eliminar el favorito de la base de datos
+    db.session.delete(favourite)
+    db.session.commit()
+
+    return jsonify({"msg": "Favourite deleted successfully"}), 200   
 
 @app.route('/person', methods=['GET'])
 def get_persons():
@@ -208,48 +291,6 @@ def update_person(person_id):
     db.session.commit()
     return jsonify({"msg": "Person updated successfully"}), 200
 
-
-@app.route('/user/<int:user_id>/favourites/favourite_person/<int:person_id>', methods=['POST'])
-def add_favourite_person(user_id, person_id):
-    user = User.query.get(user_id)
-    person = Person.query.get(person_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not person:
-        return jsonify({"msg": "Person not found"}), 404
-
-    # Verificar si la persona ya está en los favoritos del usuario
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_person=person_id).first()
-
-    if existing_favourite:
-        return jsonify({"msg": "Person already in favourites"}), 400
-    else:
-        new_favourite = Favourite(id_user=user.id_user, favourite_person=person_id)
-        db.session.add(new_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Person added to favourites"}), 200
-    
-@app.route('/user/<int:user_id>/favourites/favourite_person/<int:person_id>', methods=['DELETE'])
-def remove_favourite_person(user_id, person_id):
-    user = User.query.get(user_id)
-    person = Person.query.get(person_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not person:
-        return jsonify({"msg": "Person not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_person=person_id).first()
-
-    if existing_favourite:
-        db.session.delete(existing_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Person removed from favourites"}), 200
-    else:
-        return jsonify({"msg": "Person not in favourites"}), 400
-
-
 @app.route('/planet', methods=['GET'])
 def get_planets():
     planets = Planet.query.all()
@@ -313,18 +354,20 @@ def delete_planet(planet_id):
     
     if not planet:
         return jsonify({"msg": "Planet not found"}), 404
+
+    # Buscar todos los favoritos que hacen referencia al planeta
+    favourites = Favourite.query.filter_by(favourite_planet=planet_id).all()
+
+    # Eliminar esos favoritos
+    for favourite in favourites:
+        db.session.delete(favourite)
     
-    users = User.query.all()
-    for user in users:
-        if user.favourites:
-            for favourite in user.favourites:
-                if favourite.favourite_planet == planet_id:
-                    db.session.delete(favourite)
-                    db.session.commit()
-    
+    # Finalmente, eliminar el planeta
     db.session.delete(planet)
-    db.session.commit()    
-    return jsonify({"msg": "Planet deleted successfully"}), 200
+    db.session.commit()
+
+    return jsonify({"msg": "Planet and associated favourites deleted successfully"}), 200
+
 
 
 @app.route('/planet/<int:planet_id>', methods=['PUT'])
@@ -351,47 +394,6 @@ def update_planet(planet_id):
     db.session.commit()
     
     return jsonify({"msg": "Planet updated successfully"}), 200
-
-
-@app.route('/user/<int:user_id>/favourites/favourite_planet/<int:planet_id>', methods=['POST'])
-def add_favourite_planet(user_id, planet_id):
-    user = User.query.get(user_id)
-    planet = Planet.query.get(planet_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not planet:
-        return jsonify({"msg": "Planet not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_planet=planet_id).first()
-
-    if existing_favourite:
-        return jsonify({"msg": "Planet already in favourites"}), 400
-    else:
-        new_favourite = Favourite(id_user=user.id_user, favourite_planet=planet_id)
-        db.session.add(new_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Planet added to favourites"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_planet/<int:planet_id>', methods=['DELETE'])
-def remove_favourite_planet(user_id, planet_id):
-    user = User.query.get(user_id)
-    planet = Planet.query.get(planet_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not planet:
-        return jsonify({"msg": "Planet not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_planet=planet_id).first()
-
-    if existing_favourite:
-        db.session.delete(existing_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Planet removed from favourites"}), 200
-    else:
-        return jsonify({"msg": "Planet not in favourites"}), 400
-
 
 
 @app.route('/film', methods=['GET'])
@@ -490,45 +492,6 @@ def update_film(film_id):
     db.session.commit()
     
     return jsonify({"msg": "Film updated successfully"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_film/<int:film_id>', methods=['POST'])
-def add_favourite_film(user_id, film_id):
-    user = User.query.get(user_id)
-    film = Film.query.get(film_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not film:
-        return jsonify({"msg": "Film not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_film=film_id).first()
-
-    if existing_favourite:
-        return jsonify({"msg": "Film already in favourites"}), 400
-    else:
-        new_favourite = Favourite(id_user=user.id_user, favourite_film=film_id)
-        db.session.add(new_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Film added to favourites"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_film/<int:film_id>', methods=['DELETE'])
-def remove_favourite_film(user_id, film_id):
-    user = User.query.get(user_id)
-    film = Film.query.get(film_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not film:
-        return jsonify({"msg": "Film not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_film=film_id).first()
-
-    if existing_favourite:
-        db.session.delete(existing_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Film removed from favourites"}), 200
-    else:
-        return jsonify({"msg": "Film not in favourites"}), 400
 
 
 @app.route('/vehicles', methods=['GET'])
@@ -635,46 +598,6 @@ def update_vehicle(vehicle_id):
     db.session.commit()
     
     return jsonify({"msg": "Vehicle updated successfully"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_vehicle/<int:vehicle_id>', methods=['POST'])
-def add_favourite_vehicle(user_id, vehicle_id):
-    user = User.query.get(user_id)
-    vehicle = Vehicle.query.get(vehicle_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not vehicle:
-        return jsonify({"msg": "Vehicle not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_vehicle=vehicle_id).first()
-
-    if existing_favourite:
-        return jsonify({"msg": "Vehicle already in favourites"}), 400
-    else:
-        new_favourite = Favourite(id_user=user.id_user, favourite_vehicle=vehicle_id)
-        db.session.add(new_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Vehicle added to favourites"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_vehicle/<int:vehicle_id>', methods=['DELETE'])
-def remove_favourite_vehicle(user_id, vehicle_id):
-    user = User.query.get(user_id)
-    vehicle = Vehicle.query.get(vehicle_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not vehicle:
-        return jsonify({"msg": "Vehicle not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_vehicle=vehicle_id).first()
-
-    if existing_favourite:
-        db.session.delete(existing_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Vehicle removed from favourites"}), 200
-    else:
-        return jsonify({"msg": "Vehicle not in favourites"}), 400
-
 
 @app.route('/starship', methods=['GET'])
 def get_starships():
@@ -786,48 +709,6 @@ def update_starship(starship_id):
     db.session.commit()
     
     return jsonify({"msg": "Starship updated successfully"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_starship/<int:starship_id>', methods=['POST'])
-def add_favourite_starship(user_id, starship_id):
-    user = User.query.get(user_id)
-    starship = Starship.query.get(starship_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not starship:
-        return jsonify({"msg": "Starship not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_starship=starship_id).first()
-
-    if existing_favourite:
-        return jsonify({"msg": "Starship already in favourites"}), 400
-    else:
-        new_favourite = Favourite(id_user=user.id_user, favourite_starship=starship_id)
-        db.session.add(new_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Starship added to favourites"}), 200
-
-@app.route('/user/<int:user_id>/favourites/favourite_starship/<int:starship_id>', methods=['DELETE'])
-def remove_favourite_starship(user_id, starship_id):
-    user = User.query.get(user_id)
-    starship = Starship.query.get(starship_id)
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    if not starship:
-        return jsonify({"msg": "Starship not found"}), 404
-
-    existing_favourite = Favourite.query.filter_by(id_user=user.id_user, favourite_starship=starship_id).first()
-
-    if existing_favourite:
-        db.session.delete(existing_favourite)
-        db.session.commit()
-        return jsonify({"msg": "Starship removed from favourites"}), 200
-    else:
-        return jsonify({"msg": "Starship not in favourites"}), 400
-    
-
-
 
 # this only runs if `$ python src/app.py` is executed
 if __name__ == '__main__':
