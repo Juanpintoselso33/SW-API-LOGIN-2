@@ -9,7 +9,7 @@ from flask_swagger import swagger
 from flask_cors import CORS
 from utils import APIException, generate_sitemap
 from models import db, User, Person, Planet, Film, Starship, Vehicle, Favourite
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -31,44 +31,59 @@ setup_admin(app)
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY")
 jwt = JWTManager(app)
 
-
-# Handle/serialize errors like a JSON object
-from flask import Flask, jsonify
-from models import db, User, Person, Planet, Film, Starship, Vehicle, Favourite
-
-# ... (tu código existente)
-
-@app.route('/delete_all', methods=['DELETE'])
-def delete_all():
-    try:
-        # Eliminar todos los registros de cada tabla
-        Favourite.query.delete()
-        Vehicle.query.delete()
-        Starship.query.delete()
-        Film.query.delete()
-        Planet.query.delete()
-        Person.query.delete()
-        User.query.delete()
-        
-        # Confirmar los cambios en la base de datos
-        db.session.commit()
-        
-        return jsonify({"msg": "Todas las tablas han sido vaciadas"}), 200
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"msg": "Error al eliminar registros", "error": str(e)}), 500
-
 @app.errorhandler(APIException)
 def handle_invalid_usage(error):
     return jsonify(error.to_dict()), error.status_code
-
-# generate sitemap with all your endpoints
-
 
 @app.route('/')
 def sitemap():
     return generate_sitemap(app)
 
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    name = data.get('name')
+    password = data.get('password')
+
+    new_user = User(name=name, password=password)
+    db.session.add(new_user)
+    db.session.commit()
+
+    access_token = create_access_token(identity=new_user.id_user)
+
+    return jsonify({"msg": "User created", "access_token": access_token}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    name = data.get('name')
+    password = data.get('password')
+
+    user = User.query.filter_by(name=name, password=password).first()
+    
+    if user is None:
+        return jsonify({"msg": "Invalid credentials"}), 401
+
+    access_token = create_access_token(identity=user.id_user)
+
+    return jsonify({"access_token": access_token}), 200
+
+@app.route('/user/<int:id_user>', methods=['DELETE'])
+def delete_user(id_user):
+    try:
+        user = User.query.get(id_user) 
+        if user is None:
+            return jsonify({"msg": "Usuario no encontrado"}), 404
+        
+        Favourite.query.filter_by(id_user=id_user).delete()
+
+        db.session.delete(user)  
+        db.session.commit()  
+
+        return jsonify({"msg": f"Usuario {id_user} eliminado exitosamente"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "No se pudo eliminar el usuario", "error": str(e)}), 500
 
 @app.route('/user', methods=['GET'])
 def get_users():
@@ -100,36 +115,41 @@ def get_user_by_id(id_user):
 
 
 @app.route('/user/<int:id_user>/favourites', methods=['GET'])
+@jwt_required()
 def get_user_favourites(id_user):
+    current_user_id = get_jwt_identity()
+
+    if current_user_id != id_user:
+        return jsonify({"msg": "Not authorized"}), 403
+
     user = User.query.get(id_user)
-    if not user:
+
+    if user is None:
         return jsonify({"msg": "User not found"}), 404
 
-    favourites = user.favourites  # Ahora es una lista de objetos Favourite
+    favourites = user.favourites
+
     if not favourites:
         return jsonify({"msg": "No favourites found for this user"}), 404
 
-    # Utilizar map para serializar cada objeto Favourite en la lista
+    # Usamos map para serializar cada objeto Favourite en la lista
     serialized_favourites = list(map(lambda favourite: favourite.serialize(), favourites))
-    
+
     return jsonify(serialized_favourites), 200
 
 @app.route('/favourite', methods=['POST'])
 def add_favourite():
     data = request.get_json()
 
-    # Verificar si el JSON contiene todos los campos necesarios
     if not data or 'id_user' not in data:
         return jsonify({"msg": "Missing fields"}), 400
 
     id_user = data['id_user']
 
-    # Verificar si el usuario existe
     user = User.query.get(id_user)
     if user is None:
         return jsonify({"msg": "User not found"}), 404
 
-    # Crear un diccionario para guardar los valores de los campos favoritos
     favourite_data = {'id_user': id_user}
 
     for key in ['favourite_planet', 'favourite_person', 'favourite_film', 'favourite_starship', 'favourite_vehicle']:
@@ -138,12 +158,10 @@ def add_favourite():
             entity = None
             entity_type = key.split('_')[1]
 
-            # Verificar si ya existe un favorito para el mismo usuario y la misma entidad
             existing_favourite = Favourite.query.filter_by(id_user=id_user).filter_by(**{key: entity_id}).first()
             if existing_favourite:
                 return jsonify({"msg": f"Duplicate favourite for {entity_type}"}), 400
 
-            # Verificar si la entidad favorita existe
             if entity_type == 'planet':
                 entity = Planet.query.get(entity_id)
             elif entity_type == 'person':
@@ -158,13 +176,10 @@ def add_favourite():
             if entity is None:
                 return jsonify({"msg": f"{entity_type.capitalize()} not found"}), 404
             
-            # Añadir al diccionario
             favourite_data[key] = entity_id
 
-    # Crear la nueva entidad de tipo Favorito
     new_favourite = Favourite(**favourite_data)
 
-    # Añadir la nueva entidad Favorito a la base de datos y hacer commit
     db.session.add(new_favourite)
     db.session.commit()
 
@@ -172,23 +187,18 @@ def add_favourite():
 
 @app.route('/user/<int:id_user>/favourites/<int:id_favourite>', methods=['DELETE'])
 def delete_user_favourite(id_user, id_favourite):
-    # Verificar si el usuario existe
     user = User.query.get(id_user)
     if user is None:
         return jsonify({"msg": "User not found"}), 404
 
-    # Buscar la entidad Favorito por su ID
     favourite = Favourite.query.get(id_favourite)
 
-    # Si no se encuentra el favorito, devolver un error 404
     if favourite is None:
         return jsonify({"msg": "Favourite not found"}), 404
 
-    # Verificar si el favorito pertenece al usuario
     if favourite.id_user != id_user:
         return jsonify({"msg": "Favourite does not belong to the user"}), 403
 
-    # Eliminar el favorito de la base de datos
     db.session.delete(favourite)
     db.session.commit()
 
@@ -256,13 +266,10 @@ def delete_person(person_id):
     if not person:
         return jsonify({"msg": "Person not found"}), 404
     
-    users = User.query.all()
-    for user in users:
-        if user.favourites:
-            for favourite in user.favourites:
-                if favourite.favourite_person == person_id:
-                    db.session.delete(favourite)
-                    db.session.commit()
+    favourites = Favourite.query.filter_by(favourite_planet=person_id).all()
+
+    for favourite in favourites:
+        db.session.delete(favourite)
     
     db.session.delete(person)
     db.session.commit()    
@@ -459,13 +466,10 @@ def delete_film(film_id):
     if not film:
         return jsonify({"msg": "Film not found"}), 404
     
-    users = User.query.all()
-    for user in users:
-        if user.favourites:
-            for favourite in user.favourites:
-                if favourite.favourite_film == film_id:
-                    db.session.delete(favourite)
-                    db.session.commit()
+    favourites = Favourite.query.filter_by(favourite_film=film_id).all()
+
+    for favourite in favourites:
+        db.session.delete(favourite)
     
     db.session.delete(film)
     db.session.commit()    
@@ -560,13 +564,10 @@ def delete_vehicle(vehicle_id):
     if not vehicle:
         return jsonify({"msg": "Vehicle not found"}), 404
     
-    users = User.query.all()
-    for user in users:
-        if user.favourites:
-            for favourite in user.favourites:
-                if favourite.favourite_vehicle == vehicle_id:
-                    db.session.delete(favourite)
-                    db.session.commit()
+    favourites = Favourite.query.filter_by(favourite_vehicle=vehicle_id).all()
+
+    for favourite in favourites:
+        db.session.delete(favourite)
     
     db.session.delete(vehicle)
     db.session.commit()    
@@ -669,13 +670,10 @@ def delete_starship(starship_id):
     if not starship:
         return jsonify({"msg": "Starship not found"}), 404
     
-    users = User.query.all()
-    for user in users:
-        if user.favourites:
-            for favourite in user.favourites:
-                if favourite.favourite_starship == starship_id:
-                    db.session.delete(favourite)
-                    db.session.commit()
+    favourites = Favourite.query.filter_by(favourite_starship=starship_id).all()
+
+    for favourite in favourites:
+        db.session.delete(favourite)
     
     db.session.delete(starship)
     db.session.commit()    

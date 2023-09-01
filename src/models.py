@@ -9,7 +9,8 @@ db = SQLAlchemy()
 class User(db.Model):
     __tablename__ = 'user'
     id_user = db.Column(db.Integer, primary_key=True, unique=True)
-    name = db.Column(db.String)    
+    name = db.Column(db.String)
+    password = db.Column(db.String)  
     favourites = db.relationship('Favourite', back_populates='user')
     
     def __repr__(self):
@@ -19,7 +20,7 @@ class User(db.Model):
         return {
             "id": self.id_user,
             "name": self.name,
-            "favourites": [favourite.serialize() for favourite in self.favourites]
+            #"favourites": [favourite.serialize() for favourite in self.favourites]
         }
 
 
