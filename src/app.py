@@ -11,7 +11,9 @@ from utils import APIException, generate_sitemap
 from models import db, User, Person, Planet, Film, Starship, Vehicle, Favourite
 from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
 
+
 app = Flask(__name__)
+
 app.url_map.strict_slashes = False
 
 
@@ -26,9 +28,11 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 MIGRATE = Migrate(app, db)
 db.init_app(app)
+
 CORS(app)
-setup_admin(app)
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY")
+
+setup_admin(app)
 jwt = JWTManager(app)
 
 @app.errorhandler(APIException)
