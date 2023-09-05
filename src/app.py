@@ -144,7 +144,7 @@ def get_user_favourites(id_user):
 @app.route('/favourite', methods=['POST'])
 def add_favourite():
     data = request.get_json()
-
+    
     if not data or 'id_user' not in data:
         return jsonify({"msg": "Missing fields"}), 400
 
@@ -159,6 +159,9 @@ def add_favourite():
     for key in ['favourite_planet', 'favourite_person', 'favourite_film', 'favourite_starship', 'favourite_vehicle']:
         if key in data:
             entity_id = data[key]
+            if entity_id is None:
+                continue  # Skip this iteration if entity_id is None
+
             entity = None
             entity_type = key.split('_')[1]
 
@@ -188,6 +191,7 @@ def add_favourite():
     db.session.commit()
 
     return jsonify({"msg": "Favourite added successfully", "id_favourite": new_favourite.id_favourite}), 201
+
 
 @app.route('/user/<int:id_user>/favourites/<int:id_favourite>', methods=['DELETE'])
 def delete_user_favourite(id_user, id_favourite):
@@ -530,7 +534,7 @@ def get_vehicle_by_id(id_vehicle):
 
     return jsonify(filtered_vehicles[0]), 200
 
-@app.route('/vehicle', methods=['POST'])
+@app.route('/vehicles', methods=['POST'])
 def add_vehicle():
     data = request.get_json()
     required_attributes = ['name', 'model', 'vehicle_class', 'manufacturer', 'cost_in_credits', 'length', 'crew', 'passengers', 'max_atmosphering_speed', 'cargo_capacity', 'consumables', 'url', 'description']
